@@ -183,6 +183,13 @@ const ConfigModule = {
 		
 		if (missingFields.length > 0) {
 			LoggerModule.warn(`配置缺少必要字段: ${missingFields.join(', ')}`);
+			// 为缺失的PNG或ICO提供默认占位符，避免页面元素链接到undefined
+			if (missingFields.includes('PNG') && !config.PNG) {
+				config.PNG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; 
+			}
+			if (missingFields.includes('ICO') && !config.ICO) {
+				config.ICO = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+			}
 		}
 		
 		return config;
@@ -682,7 +689,7 @@ const UIModule = {
 					hasManualSelection: () => !!document.getElementById('manual-selection-notice')
 				},
 				
-				// 向后兼容的方法
+				// 向其他方法提供UI函数引用
 				showManualSelectionNotice: function(name) {
 					return this.ui.showManualSelectionNotice(name);
 				},
@@ -725,67 +732,130 @@ const UIModule = {
 				
 				// URL预加载优化
 				preloadUrls: function(urlResults, fastestUrl) {
-					// 简化预加载逻辑，避免硬编码域名
-					if (!window.requestIdleCallback || !fastestUrl) return;
+					// 防止无效参数或不支持的环境
+					if (!window.requestIdleCallback) return;
 					
 					// 使用requestIdleCallback在浏览器空闲时预加载资源
 					window.requestIdleCallback(function() {
+						// 基本环境检查
 						if (!('head' in document) || !('createElement' in document)) return;
 						
-						const head = document.head;
-						const preloaded = {};
-						
-						// 优化创建link元素的函数
-						const createLink = function(rel, href, options = {}) {
-							const link = document.createElement('link');
-							link.rel = rel;
-							link.href = href;
-							// 应用额外选项
-							Object.keys(options).forEach(key => {
-								if (key in link) link[key] = options[key];
-							});
-							return link;
-						};
-						
-						// 动态提取域名的函数
-						const extractOrigin = function(url) {
-							try {
-								return new URL(url).origin;
-							} catch(e) {
-								return null;
+						// 预加载状态管理
+						const preloadState = {
+							origins: new Set(),             // 已预加载的域名集合
+							preloaded: new Map(),           // URL到优先级的映射，避免重复处理
+							queue: {                        // 优先级队列
+								high: [],                   // 高优先级URL列表
+								medium: [],                 // 中优先级URL列表
+								low: []                     // 低优先级URL列表
+							},
+							
+							// 动态提取域名和路径
+							extractUrlInfo: function(url) {
+								try {
+									const urlObj = new URL(url);
+									return {
+										origin: urlObj.origin,
+										path: urlObj.pathname + urlObj.search,
+										fullUrl: url
+									};
+								} catch(e) {
+									return null;
+								}
+							},
+							
+							// 添加URL到预加载队列，避免重复
+							addToQueue: function(url, priority = 'low') {
+								if (!url || this.preloaded.has(url)) return false;
+								
+								const urlInfo = this.extractUrlInfo(url);
+								if (!urlInfo) return false;
+								
+								// 如果域名已经加入预加载，但优先级更高，则更新
+								if (this.origins.has(urlInfo.origin)) {
+									const currentPriority = this.preloaded.get(url);
+									if (currentPriority && this.priorityValue(priority) <= this.priorityValue(currentPriority)) {
+										return false; // 当前优先级已经足够高
+									}
+									// 否则从队列中移除旧URL，下面会添加新的
+									this.queue[currentPriority] = this.queue[currentPriority].filter(u => u !== url);
+								}
+								
+								// 添加到队列
+								this.queue[priority].push(url);
+								this.preloaded.set(url, priority);
+								this.origins.add(urlInfo.origin);
+								return true;
+							},
+							
+							// 获取优先级数值，用于比较
+							priorityValue: function(priority) {
+								return {high: 0, medium: 1, low: 2}[priority] || 2;
+							},
+							
+							// 处理预加载队列
+							processQueue: function() {
+								const head = document.head;
+								const createLink = (rel, href, options = {}) => {
+									const link = document.createElement('link');
+									link.rel = rel;
+									link.href = href;
+									Object.keys(options).forEach(key => {
+										if (key in link) link[key] = options[key];
+									});
+									return link;
+								};
+								
+								// 优先处理高优先级资源
+								['high', 'medium', 'low'].forEach(priority => {
+									this.queue[priority].forEach(url => {
+										const urlInfo = this.extractUrlInfo(url);
+										if (!urlInfo) return;
+										
+										// 预连接
+										head.appendChild(createLink('preconnect', urlInfo.origin));
+										
+										// 根据优先级决定预加载策略
+										if (priority === 'high') {
+											head.appendChild(createLink('prefetch', url, {fetchPriority: 'high'}));
+										} else if (priority === 'medium') {
+											// 中优先级使用prefetch但不指定优先级
+											head.appendChild(createLink('prefetch', url));
+										} 
+										// 低优先级只预连接域名，不预取内容
+									});
+								});
 							}
 						};
 						
-						// 预加载单个URL的函数
-						const preloadUrl = function(url, priority) {
-							if (!url) return;
-							
-							const origin = extractOrigin(url);
-							if (!origin || preloaded[origin]) return;
-							
-							// 添加预链接和预取
-							head.appendChild(createLink('preconnect', origin));
-							if (priority) {
-								head.appendChild(createLink('prefetch', url, {fetchPriority: priority}));
-							}
-							
-							preloaded[origin] = true;
-						};
+						// 添加最快的URL到高优先级队列
+						if (fastestUrl) {
+							preloadState.addToQueue(fastestUrl, 'high');
+						}
 						
-						// 处理最快的URL - 高优先级
-						preloadUrl(fastestUrl, 'high');
-						
-						// 延迟处理候选URL - 低优先级
-						setTimeout(function() {
-							if (!Array.isArray(urlResults)) return;
-							
+						// 处理其他测试结果，以中优先级添加
+						if (Array.isArray(urlResults)) {
 							urlResults
 								.filter(r => typeof r.latency === 'number' && r.url !== fastestUrl)
 								.sort((a, b) => a.latency - b.latency)
 								.slice(0, 2) // 只处理最快的2个备选URL
-								.forEach(result => preloadUrl(result.url, 'low'));
-						}, 1000); // 延迟1秒处理低优先级资源
-					}, {timeout: 2000}); // 设置2秒超时，确保不影响主要交互
+								.forEach(result => preloadState.addToQueue(result.url, 'medium'));
+						}
+						
+						// 立即处理高优先级资源
+						preloadState.processQueue();
+						
+						// 使用增量处理避免阻塞主线程
+						if (preloadState.queue.medium.length > 0 || preloadState.queue.low.length > 0) {
+							setTimeout(function() {
+								// 二次检查用户是否已交互
+								const userHasInteracted = document.querySelector('.clicked') !== null;
+								if (!userHasInteracted) {
+									preloadState.processQueue();
+								}
+							}, 1500);
+						}
+					}, {timeout: 2000});
 				}
 			};
 			
@@ -800,12 +870,27 @@ const UIModule = {
 					return new Promise(function(resolve) {
 						const start = performance.now();
 						const xhr = new XMLHttpRequest();
+						const controller = new AbortController();
+						let isResolved = false;
+						
+						// 创建超时计时器
+						const timeoutId = setTimeout(() => {
+							if (!isResolved) {
+								controller.abort();
+								xhr.abort(); // 取消XHR请求
+								isResolved = true;
+								resolve({ url, latency: '响应超时', status: 'timeout' });
+							}
+						}, timeout);
 						
 						xhr.open('HEAD', url, true);
-						xhr.timeout = timeout;
-						
 						xhr.onload = function() {
+							if (isResolved) return;
+							
+							clearTimeout(timeoutId);
+							isResolved = true;
 							const latency = Math.round(performance.now() - start);
+							
 							if (xhr.status >= 200 && xhr.status < 400) {
 								resolve({ url, latency, status: xhr.status });
 							} else {
@@ -813,65 +898,69 @@ const UIModule = {
 							}
 						};
 						
-						xhr.ontimeout = function() {
-							resolve({ url, latency: '响应超时', status: 'timeout' });
+						xhr.onerror = function() {
+							if (isResolved) return;
+							
+							clearTimeout(timeoutId);
+							isResolved = true;
+							resolve({ url, latency: '请求失败', status: 'error' });
 						};
 						
-						xhr.onerror = function() {
-							resolve({ url, latency: '请求失败', status: 'error' });
+						xhr.onabort = function() {
+							if (isResolved) return;
+							
+							clearTimeout(timeoutId);
+							isResolved = true;
+							resolve({ url, latency: '请求中止', status: 'aborted' });
 						};
 						
 						xhr.send();
 					});
 				},
 				
-				// 多次测试取平均值
+				// 多次测试取平均值 - 优化实现
 				multiTest: function(url, times, timeout, name) {
 					times = times || CONFIG.SPEED_TEST.TESTS_PER_ROUND;
 					timeout = timeout || CONFIG.SPEED_TEST.FINAL_TIMEOUT;
 					
 					const self = this;
 					
-					return new Promise(function(resolve) {
+					return new Promise(async function(resolve) {
 						const results = [];
-						let testCount = 0;
 						
-						const runTest = function() {
-							self.testLatency(url, timeout).then(function(result) {
-								if (typeof result.latency === 'number') {
-									results.push(result.latency);
-								}
-								
-								testCount++;
-								
-								if (testCount < times) {
-									// 等待一段时间后进行下一次测试
-									setTimeout(runTest, CONFIG.SPEED_TEST.DELAY_BETWEEN_TESTS);
-								} else {
-									// 所有测试完成
-									if (results.length === 0) {
-										resolve({ url, name, latency: '所有测试均失败', status: 'failed' });
-										return;
-									}
-									
-									// 如果有多个结果，移除最高值以排除异常值的影响
-									if (results.length > 2) {
-										results.sort(function(a, b) { return a - b; });
-										results.pop();
-									}
-									
-									// 计算平均延迟
-									const avgLatency = Math.round(
-										results.reduce((sum, val) => sum + val, 0) / results.length
-									);
-									
-									resolve({ url, name, latency: avgLatency, status: 'success' });
-								}
-							});
-						};
+						for (let i = 0; i < times; i++) {
+							// 运行单次测试
+							const result = await self.testLatency(url, timeout);
+							
+							// 记录有效结果
+							if (typeof result.latency === 'number') {
+								results.push(result.latency);
+							}
+							
+							// 最后一次测试除外，都需要等待一定时间
+							if (i < times - 1) {
+								await Utils.sleep(CONFIG.SPEED_TEST.DELAY_BETWEEN_TESTS);
+							}
+						}
 						
-						// 开始第一次测试
-						runTest();
+						// 测试结果处理
+						if (results.length === 0) {
+							resolve({ url, name, latency: '所有测试均失败', status: 'failed' });
+							return;
+						}
+						
+						// 移除最高值以排除异常值的影响
+						if (results.length > 2) {
+							results.sort((a, b) => a - b);
+							results.pop();
+						}
+						
+						// 计算平均延迟
+						const avgLatency = Math.round(
+							results.reduce((sum, val) => sum + val, 0) / results.length
+						);
+						
+						resolve({ url, name, latency: avgLatency, status: 'success' });
 					});
 				},
 				
@@ -1139,9 +1228,40 @@ export default {
 			if (path.toLowerCase() === '/favicon.ico') {
 				LoggerModule.debug('返回网站图标');
 				const icoUrl = env.ICO || CONFIG.SITE.ICO;
-				return fetch(icoUrl).catch(() => 
-					new Response('', {status: 204}) // 无内容错误处理
-				);
+				const fallbackIco = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+				// 判断是否为 data: 协议（本地base64）
+				if (icoUrl.startsWith('data:')) {
+					return new Response(Buffer.from(icoUrl.split(',')[1], 'base64'), {
+						headers: {
+							'content-type': 'image/x-icon',
+							'Cache-Control': 'public, max-age=86400',
+							'Access-Control-Allow-Origin': '*'
+						}
+					});
+				}
+				// 远程 fetch
+				try {
+					const res = await fetch(icoUrl);
+					if (res.ok && res.headers.get('content-type')?.includes('image')) {
+						return new Response(res.body, {
+							headers: {
+								'content-type': res.headers.get('content-type') || 'image/x-icon',
+								'Cache-Control': 'public, max-age=86400',
+								'Access-Control-Allow-Origin': '*'
+							}
+						});
+					}
+				} catch (e) {
+					LoggerModule.warn('favicon.ico fetch 失败，降级为本地base64');
+				}
+				// 降级为本地base64
+				return new Response(Buffer.from(fallbackIco.split(',')[1], 'base64'), {
+					headers: {
+						'content-type': 'image/x-icon',
+						'Cache-Control': 'public, max-age=86400',
+						'Access-Control-Allow-Origin': '*'
+					}
+				});
 			}
 			// 配置初始化，合并环境变量和默认配置
 			const config = ConfigModule.initSiteConfig(env);
