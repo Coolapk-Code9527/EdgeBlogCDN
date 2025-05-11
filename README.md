@@ -4,7 +4,7 @@
 
 ## 项目简介
 
-EdgeBlogCDN是一个轻量级边缘计算和内容分发系统，基于Cloudflare Workers构建，支持多CDN线路的智能测速与自动跳转。项目旨在为博客和网站提供高可用、低延迟、智能分流的极致访问体验。
+EdgeBlogCDN是一个轻量级边缘计算和内容分发系统，基于[Blog-CDN-Gateway](https://github.com/cmliu/Blog-CDN-Gateway)构建 Cloudflare Workers部署，支持多CDN线路的智能测速与自动跳转。项目旨在为博客和网站提供高可用、低延迟、智能分流的极致访问体验。
 
 ---
 
