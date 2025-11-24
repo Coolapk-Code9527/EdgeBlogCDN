@@ -45,7 +45,7 @@ const CONFIG = {
 		'https://blog.115694.xyz#Cloudflare CDN',
 		'https://fastly.blog.115694.xyz#Fastly CDN',
 		'https://gblog.115694.xyz#Gcore CDN',
-		'https://oneblog.115694.xyz#Edge One',
+		'https://one.blog.115694.xyz#Edge One',
 		'https://rin-blog-f0y.pages.dev#备用地址1'
 	],
 
